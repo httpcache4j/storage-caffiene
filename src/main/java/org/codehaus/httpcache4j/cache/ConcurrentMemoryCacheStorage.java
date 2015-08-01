@@ -12,23 +12,17 @@ import java.net.URI;
 import java.util.Iterator;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 import java.util.stream.Stream;
 
 public final class ConcurrentMemoryCacheStorage implements CacheStorage {
     private final Cache<URI, Map<Vary, CacheItem>> cache;
-    private final ExecutorService executor;
 
-    public ConcurrentMemoryCacheStorage() { this(1000, 1); }
+    public ConcurrentMemoryCacheStorage() { this(1000); }
 
-    public ConcurrentMemoryCacheStorage(long maxSize, int maxThreads) {
-        executor = Executors.newFixedThreadPool(maxThreads);
+    public ConcurrentMemoryCacheStorage(long maxSize) {
         cache = Caffeine.newBuilder().
                 maximumSize(maxSize).
-                name(() -> getClass().getSimpleName()).
                 initialCapacity(100).
-                executor(executor).
                 build();
     }
 
@@ -78,7 +72,6 @@ public final class ConcurrentMemoryCacheStorage implements CacheStorage {
 
     public void shutdown() {
         clear();
-        executor.shutdown();
     }
 
     public Iterator<Key> iterator() {
@@ -103,12 +96,13 @@ public final class ConcurrentMemoryCacheStorage implements CacheStorage {
 
     private HTTPResponse putImpl(final Key key, final HTTPResponse response) {
         CacheItem item = new DefaultCacheItem(response);
-        Map<Vary, CacheItem> varyCacheItemMap = cache.getIfPresent(key.getURI());
-        if (varyCacheItemMap == null) {
-            varyCacheItemMap = new ConcurrentHashMap<>(5);
-            cache.put(key.getURI(), varyCacheItemMap);
-        }
-        varyCacheItemMap.put(key.getVary(), item);
+        cache.asMap().compute(key.getURI(), (uri, map) -> {
+            if (map == null) {
+                map = new ConcurrentHashMap<>(5);
+            }
+            map.put(key.getVary(), item);
+            return map;
+        });
         return response;
     }
 
@@ -121,12 +115,9 @@ public final class ConcurrentMemoryCacheStorage implements CacheStorage {
     }
 
     private void invalidate(Key key) {
-        Map<Vary, CacheItem> varyCacheItemMap = cache.getIfPresent(key.getURI());
-        if (varyCacheItemMap != null) {
-            varyCacheItemMap.remove(key.getVary());
-            if (varyCacheItemMap.isEmpty()) {
-                cache.invalidate(key.getURI());
-            }
-        }
+        cache.asMap().computeIfPresent(key.getURI(), (uri, map) -> {
+            map.remove(key.getVary());
+            return map.isEmpty() ? null : map;
+        });
     }
 }
